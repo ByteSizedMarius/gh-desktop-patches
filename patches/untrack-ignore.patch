@@ -1,0 +1,154 @@
+diff --git a/app/src/lib/git/rm.ts b/app/src/lib/git/rm.ts
+index 0fb5821..8627575 100644
+--- a/app/src/lib/git/rm.ts
++++ b/app/src/lib/git/rm.ts
+@@ -29,3 +29,15 @@ export async function removeConflictedFile(
+ ) {
+   await git(['rm', '--', file.path], repository.path, 'removeConflictedFile')
+ }
++
++/** Remove files from the index but keep them on disk */
++export async function untrackFiles(
++  repository: Repository,
++  paths: ReadonlyArray<string>
++): Promise<void> {
++  await git(
++    ['rm', '--cached', '--', ...paths],
++    repository.path,
++    'untrackFiles'
++  )
++}
+diff --git a/app/src/lib/stores/app-store.ts b/app/src/lib/stores/app-store.ts
+index 69598de..0e68994 100644
+--- a/app/src/lib/stores/app-store.ts
++++ b/app/src/lib/stores/app-store.ts
+@@ -176,6 +176,7 @@ import {
+   getRebaseInternalState,
+   getCommit,
+   appendIgnoreFile,
++  untrackFiles,
+   getRepositoryType,
+   RepositoryType,
+   getCommitRangeDiff,
+@@ -6124,6 +6125,18 @@ export class AppStore extends TypedBaseStore<IAppState> {
+     return this._refreshRepository(repository)
+   }
+ 
++  public async _untrackAndIgnoreFiles(
++    repository: Repository,
++    filePaths: ReadonlyArray<string>
++  ): Promise<void> {
++    await untrackFiles(repository, filePaths)
++    await appendIgnoreFile(
++      repository,
++      filePaths.length === 1 ? filePaths[0] : [...filePaths]
++    )
++    return this._refreshRepository(repository)
++  }
++
+   public _resolveOAuthRequest(action: IOAuthAction) {
+     return this.signInStore.resolveOAuthRequest(action)
+   }
+diff --git a/app/src/ui/changes/changes-list.tsx b/app/src/ui/changes/changes-list.tsx
+index 0b849b3..77459d8 100644
+--- a/app/src/ui/changes/changes-list.tsx
++++ b/app/src/ui/changes/changes-list.tsx
+@@ -629,6 +629,37 @@ export class ChangesList extends React.Component<
+         })
+       })
+ 
++    const trackedPaths = selectedFiles
++      .filter(
++        f =>
++          f.status.kind !== AppFileStatusKind.Untracked &&
++          Path.basename(f.path) !== GitIgnoreFileName
++      )
++      .map(f => f.path)
++
++    if (trackedPaths.length > 0) {
++      const untrackLabel =
++        trackedPaths.length === 1
++          ? __DARWIN__
++            ? 'Untrack and Ignore File (Remove from Git)'
++            : 'Untrack and ignore file (remove from Git)'
++          : __DARWIN__
++            ? `Untrack and Ignore ${trackedPaths.length} Selected Files (Remove from Git)`
++            : `Untrack and ignore ${trackedPaths.length} selected files (remove from Git)`
++
++      items.push(
++        { type: 'separator' },
++        {
++          label: untrackLabel,
++          action: () =>
++            this.props.dispatcher.untrackAndIgnoreFiles(
++              this.props.repository,
++              trackedPaths
++            ),
++        }
++      )
++    }
++
+     if (paths.length > 1) {
+       items.push(
+         { type: 'separator' },
+diff --git a/app/src/ui/changes/filter-changes-list.tsx b/app/src/ui/changes/filter-changes-list.tsx
+index 15b2c72..1e14a7b 100644
+--- a/app/src/ui/changes/filter-changes-list.tsx
++++ b/app/src/ui/changes/filter-changes-list.tsx
+@@ -727,6 +727,37 @@ export class FilterChangesList extends React.Component<
+         })
+       })
+ 
++    const trackedPaths = selectedFiles
++      .filter(
++        f =>
++          f.status.kind !== AppFileStatusKind.Untracked &&
++          Path.basename(f.path) !== GitIgnoreFileName
++      )
++      .map(f => f.path)
++
++    if (trackedPaths.length > 0) {
++      const untrackLabel =
++        trackedPaths.length === 1
++          ? __DARWIN__
++            ? 'Untrack and Ignore File (Remove from Git)'
++            : 'Untrack and ignore file (remove from Git)'
++          : __DARWIN__
++            ? `Untrack and Ignore ${trackedPaths.length} Selected Files (Remove from Git)`
++            : `Untrack and ignore ${trackedPaths.length} selected files (remove from Git)`
++
++      items.push(
++        { type: 'separator' },
++        {
++          label: untrackLabel,
++          action: () =>
++            this.props.dispatcher.untrackAndIgnoreFiles(
++              this.props.repository,
++              trackedPaths
++            ),
++        }
++      )
++    }
++
+     if (paths.length > 1) {
+       items.push(
+         { type: 'separator' },
+diff --git a/app/src/ui/dispatcher/dispatcher.ts b/app/src/ui/dispatcher/dispatcher.ts
+index 2a4671c..2f8aab2 100644
+--- a/app/src/ui/dispatcher/dispatcher.ts
++++ b/app/src/ui/dispatcher/dispatcher.ts
+@@ -1449,6 +1449,14 @@ export class Dispatcher {
+     return this.appStore._appendIgnoreFile(repository, filePath)
+   }
+ 
++  /** Remove files from git tracking and add them to .gitignore */
++  public untrackAndIgnoreFiles(
++    repository: Repository,
++    filePaths: ReadonlyArray<string>
++  ): Promise<void> {
++    return this.appStore._untrackAndIgnoreFiles(repository, filePaths)
++  }
++
+   /** Opens a Git-enabled terminal setting the working directory to the repository path */
+   public async openShell(
+     path: string,

@@ -22,6 +22,7 @@ The following patches are available. They can be freely applied in any combinati
 | **separate-instance** | Run alongside official GitHub Desktop or run multiple patched versions simultaneously with multiple accounts. Create one version without and one with this patch and install them both. See [Multiple Accounts](#multiple-accounts) |
 | **worktree** *(experimental)* | Detect when a branch is checked out in another worktree and offer to add that worktree to GitHub Desktop |
 | **submodule-open** | Double-click or right-click a submodule in changes list to open it in GitHub Desktop |
+| **untrack** | Add `Untrack and ignore` option to file right-click-menu |
 
 To get pins to work, at least `pins` and `fix-auth-handler` are required. Without `disable-auto-updates`, the patched version will be overwritten on the next automatic update.
 

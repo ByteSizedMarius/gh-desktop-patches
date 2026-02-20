@@ -60,6 +60,12 @@ const ALL_PATCHES = [
     description: 'Open submodules in Desktop via double-click or right-click menu',
     recommended: false,
   },
+  {
+    name: 'untrack-ignore',
+    file: 'untrack-ignore.patch',
+    description: 'Untrack and ignore files (git rm --cached + .gitignore)',
+    recommended: false,
+  },
 ]
 
 // ANSI colors
