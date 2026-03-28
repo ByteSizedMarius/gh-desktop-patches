@@ -6,25 +6,7 @@ Context: https://github.com/desktop/desktop/issues/8183, https://github.com/desk
 
 Please check [Notes](#notes) for the tradeoffs made by using this method.
 
-![Pinning Action](pin.gif)
-
-## Features
-
-The following patches are available. They can be freely applied in any combination. All patches are experimental; those marked *(experimental)* even more. 
-
-| Patch | Description |
-|-------|-------------|
-| **pins** | Pin repositories to the top of the list |
-| **archive** | Archive repositories to a section at the bottom of the list |
-| **remove-recent** | Remove the "Recent" repositories section |
-| **disable-auto-updates** | Disable automatic updates, as updating would remove the patches |
-| **fix-auth-handler** | Fix the authentication handler, as when building for prod without the GitHub Desktop app tokens (which are not public), the wrong OAuth callback is registered, making logging in more difficult |
-| **separate-instance** | Run alongside official GitHub Desktop or run multiple patched versions simultaneously with multiple accounts. Create one version without and one with this patch and install them both. See [Multiple Accounts](#multiple-accounts) |
-| **worktree** *(experimental)* | Detect when a branch is checked out in another worktree and offer to add that worktree to GitHub Desktop |
-| **submodule-open** | Double-click or right-click a submodule in changes list to open it in GitHub Desktop |
-| **untrack** | Add `Untrack and ignore` option to file right-click-menu |
-
-To get pins to work, at least `pins` and `fix-auth-handler` are required. Without `disable-auto-updates`, the patched version will be overwritten on the next automatic update.
+![Pinning Action](res/pin.gif)
 
 ## Quick Start
 
@@ -47,6 +29,33 @@ The script will:
 |------|-------------|
 | `--test` | Test all patch combinations |
 | `--debug` | Run in dev mode (`yarn start`) instead of building |
+
+## Features
+
+The following patches are available. They can be freely applied in any combination. All patches are experimental; those marked *(experimental)* even more. 
+
+| Patch | Description |
+|-------|-------------|
+| **pins** | Pin repositories to the top of the list |
+| **archive** | Archive repositories to a section at the bottom of the list |
+| **remove-recent** | Remove the "Recent" repositories section |
+| **disable-auto-updates** | Disable automatic updates, as updating would remove the patches |
+| **fix-auth-handler** | Fix the authentication handler, as when building for prod without the GitHub Desktop app tokens (which are not public), the wrong OAuth callback is registered, making logging in more difficult |
+| **separate-instance** | Run alongside official GitHub Desktop or run multiple patched versions simultaneously with multiple accounts. Create one version without and one with this patch and install them both. See [Multiple Accounts](#multiple-accounts) |
+| **worktree** *(experimental)* | Detect when a branch is checked out in another worktree and offer to add that worktree to GitHub Desktop |
+| **submodule-open** | Double-click or right-click a submodule in changes list to open it in GitHub Desktop |
+| **untrack** | Add `Untrack and ignore` option to file right-click-menu |
+| **addlocal-protocol** | Add `x-github-client://addlocal/` URL protocol to open local repos |
+| **hide-open-in-editor** | Add setting to hide "Open in editor" from repository context menu |
+| **agent-integration** | Add AI agent integration (Claude Code, Codex, or custom) with context menu |
+
+To get pins to work, at least `pins` and `fix-auth-handler` are required. Without `disable-auto-updates`, the patched version will be overwritten on the next automatic update.
+
+## Screenshots
+
+![Options](res/options.png)
+![Repository Context Menu](res/repo-context.png)
+![File Context Menu](res/file-context.png)
 
 ## Notes
 

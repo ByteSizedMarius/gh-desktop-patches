@@ -1,0 +1,297 @@
+diff --git a/app/src/lib/app-state.ts b/app/src/lib/app-state.ts
+index 70a339a157..2ea6d4ea18 100644
+--- a/app/src/lib/app-state.ts
++++ b/app/src/lib/app-state.ts
+@@ -242,6 +242,9 @@ export interface IAppState {
+   /** The external editor to use when opening repositories */
+   readonly selectedExternalEditor: string | null
+ 
++  /** Whether to show "Open in editor" in the repository context menu */
++  readonly showOpenInEditorForRepos: boolean
++
+   /** Whether or not the app should use Windows' OpenSSH client */
+   readonly useWindowsOpenSSH: boolean
+ 
+diff --git a/app/src/lib/stores/app-store.ts b/app/src/lib/stores/app-store.ts
+index 69598dedc8..addd25c3a3 100644
+--- a/app/src/lib/stores/app-store.ts
++++ b/app/src/lib/stores/app-store.ts
+@@ -453,6 +453,9 @@ export const underlineLinksDefault = true
+ export const showDiffCheckMarksDefault = true
+ export const showDiffCheckMarksKey = 'diff-check-marks-visible'
+ 
++const showOpenInEditorForReposKey = 'show-open-in-editor-for-repos'
++const showOpenInEditorForReposDefault = true
++
+ const commitMessageGenerationDisclaimerLastSeenKey =
+   'commit-message-generation-disclaimer-last-seen'
+ 
+@@ -612,6 +615,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
+ 
+   private underlineLinks: boolean = underlineLinksDefault
+ 
++  private showOpenInEditorForRepos: boolean = showOpenInEditorForReposDefault
++
+   private commitMessageGenerationDisclaimerLastSeen: number | null = null
+   private commitMessageGenerationButtonClicked: boolean = false
+ 
+@@ -1108,6 +1113,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
+       cachedRepoRulesets: this.cachedRepoRulesets,
+       underlineLinks: this.underlineLinks,
+       showDiffCheckMarks: this.showDiffCheckMarks,
++      showOpenInEditorForRepos: this.showOpenInEditorForRepos,
+       updateState: updateStore.state,
+       commitMessageGenerationDisclaimerLastSeen:
+         this.commitMessageGenerationDisclaimerLastSeen,
+@@ -2335,6 +2341,11 @@ export class AppStore extends TypedBaseStore<IAppState> {
+     // Always false if the feature flag is disabled.
+     this.underlineLinks = getBoolean(underlineLinksKey, underlineLinksDefault)
+ 
++    this.showOpenInEditorForRepos = getBoolean(
++      showOpenInEditorForReposKey,
++      showOpenInEditorForReposDefault
++    )
++
+     this.showDiffCheckMarks = getBoolean(
+       showDiffCheckMarksKey,
+       showDiffCheckMarksDefault
+@@ -8316,6 +8327,14 @@ export class AppStore extends TypedBaseStore<IAppState> {
+     }
+   }
+ 
++  public _updateShowOpenInEditorForRepos(value: boolean) {
++    if (value !== this.showOpenInEditorForRepos) {
++      this.showOpenInEditorForRepos = value
++      setBoolean(showOpenInEditorForReposKey, value)
++      this.emitUpdate()
++    }
++  }
++
+   public _updateUnderlineLinks(underlineLinks: boolean) {
+     if (underlineLinks !== this.underlineLinks) {
+       this.underlineLinks = underlineLinks
+diff --git a/app/src/ui/app.tsx b/app/src/ui/app.tsx
+index 520f0d45a8..fafb992f01 100644
+--- a/app/src/ui/app.tsx
++++ b/app/src/ui/app.tsx
+@@ -1599,6 +1599,7 @@ export class App extends React.Component<IAppProps, IAppState> {
+             onEditGlobalGitConfig={this.editGlobalGitConfig}
+             underlineLinks={this.state.underlineLinks}
+             showDiffCheckMarks={this.state.showDiffCheckMarks}
++            showOpenInEditorForRepos={this.state.showOpenInEditorForRepos}
+           />
+         )
+       case PopupType.RepositorySettings: {
+@@ -2887,6 +2888,7 @@ export class App extends React.Component<IAppProps, IAppState> {
+         onOpenInExternalEditor={this.openInExternalEditor}
+         externalEditorLabel={this.externalEditorLabel}
+         shellLabel={useCustomShell ? undefined : selectedShell}
++        showOpenInEditorForRepos={this.state.showOpenInEditorForRepos}
+         dispatcher={this.props.dispatcher}
+       />
+     )
+@@ -3061,6 +3063,7 @@ export class App extends React.Component<IAppProps, IAppState> {
+       shellLabel: this.state.useCustomShell
+         ? undefined
+         : this.state.selectedShell,
++      showOpenInEditorForRepos: this.state.showOpenInEditorForRepos,
+     })
+ 
+     showContextualMenu(items)
+diff --git a/app/src/ui/dispatcher/dispatcher.ts b/app/src/ui/dispatcher/dispatcher.ts
+index 2a4671c45f..51900f00cc 100644
+--- a/app/src/ui/dispatcher/dispatcher.ts
++++ b/app/src/ui/dispatcher/dispatcher.ts
+@@ -3983,6 +3983,10 @@ export class Dispatcher {
+     this.appStore.onChecksFailedNotification(repository, pullRequest, checks)
+   }
+ 
++  public setShowOpenInEditorForRepos(value: boolean) {
++    return this.appStore._updateShowOpenInEditorForRepos(value)
++  }
++
+   public setUnderlineLinksSetting(underlineLinks: boolean) {
+     return this.appStore._updateUnderlineLinks(underlineLinks)
+   }
+diff --git a/app/src/ui/preferences/integrations.tsx b/app/src/ui/preferences/integrations.tsx
+index d04ab7bc50..a23a8c1023 100644
+--- a/app/src/ui/preferences/integrations.tsx
++++ b/app/src/ui/preferences/integrations.tsx
+@@ -8,6 +8,7 @@ import { suggestedExternalEditor } from '../../lib/editors/shared'
+ import { CustomIntegrationForm } from './custom-integration-form'
+ import { ICustomIntegration } from '../../lib/custom-integration'
+ import { enableCustomIntegration } from '../../lib/feature-flag'
++import { Checkbox, CheckboxValue } from '../lib/checkbox'
+ 
+ const CustomIntegrationValue = 'other'
+ 
+@@ -26,6 +27,8 @@ interface IIntegrationsPreferencesProps {
+   readonly onCustomEditorChanged: (customEditor: ICustomIntegration) => void
+   readonly onUseCustomShellChanged: (useCustomShell: boolean) => void
+   readonly onCustomShellChanged: (customShell: ICustomIntegration) => void
++  readonly showOpenInEditorForRepos: boolean
++  readonly onShowOpenInEditorForReposChanged: (value: boolean) => void
+ }
+ 
+ interface IIntegrationsPreferencesState {
+@@ -351,12 +354,35 @@ export class Integrations extends React.Component<
+     this.props.onCustomShellChanged(customShell)
+   }
+ 
++  private onShowOpenInEditorForReposChanged = (
++    event: React.FormEvent<HTMLInputElement>
++  ) => {
++    this.props.onShowOpenInEditorForReposChanged(event.currentTarget.checked)
++  }
++
++  private renderOpenInEditorCheckbox() {
++    return (
++      <Row>
++        <Checkbox
++          label="Show &quot;Open in editor&quot; in repository context menu"
++          value={
++            this.props.showOpenInEditorForRepos
++              ? CheckboxValue.On
++              : CheckboxValue.Off
++          }
++          onChange={this.onShowOpenInEditorForReposChanged}
++        />
++      </Row>
++    )
++  }
++
+   public render() {
+     if (!enableCustomIntegration()) {
+       return (
+         <DialogContent>
+           <h2>Applications</h2>
+           <Row>{this.renderExternalEditor()}</Row>
++          {this.renderOpenInEditorCheckbox()}
+           <Row>{this.renderSelectedShell()}</Row>
+         </DialogContent>
+       )
+@@ -371,6 +397,7 @@ export class Integrations extends React.Component<
+           <Row>{this.renderExternalEditor()}</Row>
+           {this.state.useCustomEditor && this.renderCustomExternalEditor()}
+           {this.renderNoExternalEditorHint()}
++          {this.renderOpenInEditorCheckbox()}
+         </fieldset>
+         <fieldset>
+           <legend>
+diff --git a/app/src/ui/preferences/preferences.tsx b/app/src/ui/preferences/preferences.tsx
+index 64e84a957f..76d4eead66 100644
+--- a/app/src/ui/preferences/preferences.tsx
++++ b/app/src/ui/preferences/preferences.tsx
+@@ -80,6 +80,7 @@ interface IPreferencesProps {
+   readonly onEditGlobalGitConfig: () => void
+   readonly underlineLinks: boolean
+   readonly showDiffCheckMarks: boolean
++  readonly showOpenInEditorForRepos: boolean
+ }
+ 
+ interface IPreferencesState {
+@@ -132,6 +133,8 @@ interface IPreferencesState {
+   readonly underlineLinks: boolean
+ 
+   readonly showDiffCheckMarks: boolean
++
++  readonly showOpenInEditorForRepos: boolean
+ }
+ 
+ /**
+@@ -189,6 +192,7 @@ export class Preferences extends React.Component<
+       isLoadingGitConfig: true,
+       underlineLinks: this.props.underlineLinks,
+       showDiffCheckMarks: this.props.showDiffCheckMarks,
++      showOpenInEditorForRepos: this.props.showOpenInEditorForRepos,
+     }
+   }
+ 
+@@ -414,6 +418,10 @@ export class Preferences extends React.Component<
+             onCustomEditorChanged={this.onCustomEditorChanged}
+             onUseCustomShellChanged={this.onUseCustomShellChanged}
+             onCustomShellChanged={this.onCustomShellChanged}
++            showOpenInEditorForRepos={this.state.showOpenInEditorForRepos}
++            onShowOpenInEditorForReposChanged={
++              this.onShowOpenInEditorForReposChanged
++            }
+           />
+         )
+         break
+@@ -671,6 +679,12 @@ export class Preferences extends React.Component<
+     this.props.dispatcher.setSelectedTheme(theme)
+   }
+ 
++  private onShowOpenInEditorForReposChanged = (
++    showOpenInEditorForRepos: boolean
++  ) => {
++    this.setState({ showOpenInEditorForRepos })
++  }
++
+   private onUnderlineLinksChanged = (underlineLinks: boolean) => {
+     this.setState({ underlineLinks })
+   }
+@@ -822,6 +836,8 @@ export class Preferences extends React.Component<
+       this.state.uncommittedChangesStrategy
+     )
+ 
++    dispatcher.setShowOpenInEditorForRepos(this.state.showOpenInEditorForRepos)
++
+     dispatcher.setUnderlineLinksSetting(this.state.underlineLinks)
+ 
+     dispatcher.setDiffCheckMarksSetting(this.state.showDiffCheckMarks)
+diff --git a/app/src/ui/repositories-list/repositories-list.tsx b/app/src/ui/repositories-list/repositories-list.tsx
+index d5e6a10273..438f41f0c2 100644
+--- a/app/src/ui/repositories-list/repositories-list.tsx
++++ b/app/src/ui/repositories-list/repositories-list.tsx
+@@ -64,6 +64,9 @@ interface IRepositoriesListProps {
+   /** The current external editor selected by the user */
+   readonly externalEditorLabel?: string
+ 
++  /** Whether to show "Open in editor" in the repository context menu */
++  readonly showOpenInEditorForRepos: boolean
++
+   /** The label for the user's preferred shell. */
+   readonly shellLabel?: string
+ 
+@@ -221,6 +224,7 @@ export class RepositoriesList extends React.Component<
+       askForConfirmationOnRemoveRepository:
+         this.props.askForConfirmationOnRemoveRepository,
+       externalEditorLabel: this.props.externalEditorLabel,
++      showOpenInEditorForRepos: this.props.showOpenInEditorForRepos,
+       onChangeRepositoryAlias: this.onChangeRepositoryAlias,
+       onRemoveRepositoryAlias: this.onRemoveRepositoryAlias,
+       onViewOnGitHub: this.props.onViewOnGitHub,
+diff --git a/app/src/ui/repositories-list/repository-list-item-context-menu.ts b/app/src/ui/repositories-list/repository-list-item-context-menu.ts
+index 6ee52c5351..f58d12bd97 100644
+--- a/app/src/ui/repositories-list/repository-list-item-context-menu.ts
++++ b/app/src/ui/repositories-list/repository-list-item-context-menu.ts
+@@ -12,6 +12,7 @@ interface IRepositoryListItemContextMenuConfig {
+   repository: Repositoryish
+   shellLabel: string | undefined
+   externalEditorLabel: string | undefined
++  showOpenInEditorForRepos: boolean
+   askForConfirmationOnRemoveRepository: boolean
+   onViewOnGitHub: (repository: Repositoryish) => void
+   onOpenInShell: (repository: Repositoryish) => void
+@@ -62,11 +63,15 @@ export const generateRepositoryListContextMenu = (
+       action: () => config.onShowRepository(repository),
+       enabled: !missing,
+     },
+-    {
+-      label: openInExternalEditor,
+-      action: () => config.onOpenInExternalEditor(repository),
+-      enabled: !missing,
+-    },
++    ...(config.showOpenInEditorForRepos
++      ? [
++          {
++            label: openInExternalEditor,
++            action: () => config.onOpenInExternalEditor(repository),
++            enabled: !missing,
++          },
++        ]
++      : []),
+     { type: 'separator' },
+     {
+       label: config.askForConfirmationOnRemoveRepository ? 'Remove…' : 'Remove',

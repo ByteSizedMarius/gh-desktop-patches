@@ -66,6 +66,24 @@ const ALL_PATCHES = [
     description: 'Untrack and ignore files (git rm --cached + .gitignore)',
     recommended: false,
   },
+  {
+    name: 'addlocal-protocol',
+    file: 'addlocal-protocol.patch',
+    description: 'Add x-github-client://addlocal/ URL protocol to open local repos',
+    recommended: false,
+  },
+  {
+    name: 'hide-open-in-editor',
+    file: 'hide-open-in-editor.patch',
+    description: 'Add setting to hide "Open in editor" from repository context menu',
+    recommended: false,
+  },
+  {
+    name: 'agent-integration',
+    file: 'agent-integration.patch',
+    description: 'Add AI agent integration (Claude Code, Codex, or custom) with context menu',
+    recommended: false,
+  },
 ]
 
 // ANSI colors
@@ -368,21 +386,12 @@ async function applyPatches(selectedPatches, targetDir) {
 }
 
 async function testCombinations(targetDir) {
-  log('\nTesting all patch combinations...', colors.cyan)
-
   const n = ALL_PATCHES.length
-  const totalCombinations = Math.pow(2, n) - 1 // Exclude empty set
 
-  log(`Testing ${totalCombinations} combinations...\n`)
-
-  const results = []
-
-  // Helper to fully reset repo
   const resetRepo = () => {
     exec(`git checkout ${DESKTOP_TAG}`, { cwd: targetDir })
     exec(`git reset --hard ${DESKTOP_TAG}`, { cwd: targetDir })
     exec('git clean -fd', { cwd: targetDir })
-    // Clean up any leftover temp branches
     const branches = exec('git branch', { cwd: targetDir }) || ''
     branches.split('\n').forEach(b => {
       const name = b.trim().replace(/^\* /, '')
@@ -392,47 +401,72 @@ async function testCombinations(targetDir) {
     })
   }
 
-  for (let mask = 1; mask <= totalCombinations; mask++) {
-    const selectedPatches = ALL_PATCHES.filter((_, i) => mask & (1 << i))
-    const names = selectedPatches.map(p => p.name).join(' + ')
-
-    process.stdout.write(`  Testing: ${names}... `)
-
-    // Reset to clean state
+  const tryApply = async (patches) => {
     resetRepo()
-
     try {
-      const success = await applyPatches(selectedPatches, targetDir)
-      if (success) {
-        console.log(colors.green + 'OK' + colors.reset)
-        results.push({ combination: names, success: true })
-      } else {
-        console.log(colors.red + 'FAILED' + colors.reset)
-        results.push({ combination: names, success: false })
-      }
-    } catch (e) {
-      console.log(colors.red + 'FAILED' + colors.reset)
-      results.push({ combination: names, success: false, error: e.message })
+      return await applyPatches(patches, targetDir)
+    } catch {
+      return false
     }
   }
 
-  // Reset back to clean
-  resetRepo()
-
-  // Summary
-  const failed = results.filter(r => !r.success)
-
-  log('\n' + '='.repeat(50))
-  if (failed.length === 0) {
-    log('All combinations passed!', colors.green)
-    return true
-  } else {
-    log(`${failed.length} combination(s) failed:`, colors.red)
-    for (const f of failed) {
-      log(`  - ${f.combination}${f.error ? `: ${f.error}` : ''}`)
+  // Phase 1: each patch individually
+  log('\nPhase 1: Testing each patch individually...', colors.cyan)
+  const soloFails = []
+  for (const patch of ALL_PATCHES) {
+    process.stdout.write(`  ${patch.name}... `)
+    if (await tryApply([patch])) {
+      console.log(colors.green + 'OK' + colors.reset)
+    } else {
+      console.log(colors.red + 'FAILED' + colors.reset)
+      soloFails.push(patch.name)
     }
+  }
+
+  if (soloFails.length > 0) {
+    log(`\n${soloFails.length} patch(es) broken individually: ${soloFails.join(', ')}`, colors.red)
+    resetRepo()
     return false
   }
+  log(`  All ${n} patches apply individually.`, colors.green)
+
+  // Phase 2: all patches together
+  log('\nPhase 2: Testing all patches together...', colors.cyan)
+  if (await tryApply(ALL_PATCHES)) {
+    log('  All patches merge cleanly together.', colors.green)
+    resetRepo()
+    log('\nAll tests passed!', colors.green)
+    return true
+  }
+
+  // Phase 3: isolate conflicts by testing pairs
+  log('\n  All-together merge failed. Isolating conflicts...', colors.yellow)
+  log('\nPhase 3: Testing all pairs...', colors.cyan)
+  const conflicts = []
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const pair = [ALL_PATCHES[i], ALL_PATCHES[j]]
+      const names = pair.map(p => p.name).join(' + ')
+      process.stdout.write(`  ${names}... `)
+      if (await tryApply(pair)) {
+        console.log(colors.green + 'OK' + colors.reset)
+      } else {
+        console.log(colors.red + 'CONFLICT' + colors.reset)
+        conflicts.push(names)
+      }
+    }
+  }
+
+  resetRepo()
+
+  log('\n' + '='.repeat(50))
+  if (conflicts.length > 0) {
+    log(`${conflicts.length} conflicting pair(s):`, colors.red)
+    conflicts.forEach(c => log(`  - ${c}`, colors.red))
+  } else {
+    log('No pair conflicts found — issue may be a 3+ way interaction.', colors.yellow)
+  }
+  return false
 }
 
 async function main() {

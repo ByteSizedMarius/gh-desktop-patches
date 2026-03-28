@@ -1,0 +1,53 @@
+diff --git a/app/src/lib/parse-app-url.ts b/app/src/lib/parse-app-url.ts
+index a81d2f4..747fc15 100644
+--- a/app/src/lib/parse-app-url.ts
++++ b/app/src/lib/parse-app-url.ts
+@@ -23,6 +23,11 @@ export interface IOpenRepositoryFromURLAction {
+   readonly filepath: string | null
+ }
+ 
++export interface IAddLocalRepositoryAction {
++  readonly name: 'add-local-repository'
++  readonly path: string
++}
++
+ export interface IUnknownAction {
+   readonly name: 'unknown'
+   readonly url: string
+@@ -31,6 +36,7 @@ export interface IUnknownAction {
+ export type URLActionType =
+   | IOAuthAction
+   | IOpenRepositoryFromURLAction
++  | IAddLocalRepositoryAction
+   | IUnknownAction
+ 
+ // eslint-disable-next-line @typescript-eslint/naming-convention
+@@ -95,6 +101,13 @@ export function parseAppURL(url: string): URLActionType {
+   // Trim the trailing / from the URL
+   const parsedPath = pathName.substring(1)
+ 
++  if (actionName === 'addlocal') {
++    return {
++      name: 'add-local-repository',
++      path: decodeURIComponent(parsedPath),
++    }
++  }
++
+   if (actionName === 'openrepo') {
+     const pr = getQueryStringValue(query, 'pr')
+     const branch = getQueryStringValue(query, 'branch')
+diff --git a/app/src/ui/dispatcher/dispatcher.ts b/app/src/ui/dispatcher/dispatcher.ts
+index 2a4671c..c61bad0 100644
+--- a/app/src/ui/dispatcher/dispatcher.ts
++++ b/app/src/ui/dispatcher/dispatcher.ts
+@@ -1942,6 +1942,10 @@ export class Dispatcher {
+         this.openRepositoryFromUrl(action)
+         break
+ 
++      case 'add-local-repository':
++        this.openOrAddRepository(action.path)
++        break
++
+       default:
+         const unknownAction: IUnknownAction = action
+         log.warn(

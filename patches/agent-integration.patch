@@ -1,0 +1,926 @@
+diff --git a/app/src/lib/agents/index.ts b/app/src/lib/agents/index.ts
+new file mode 100644
+index 0000000..71cb7a0
+--- /dev/null
++++ b/app/src/lib/agents/index.ts
+@@ -0,0 +1,136 @@
++import { ChildProcess, spawn, execFile } from 'child_process'
++import { promisify } from 'util'
++import {
++  ICustomIntegration,
++  parseCustomIntegrationArguments,
++  expandTargetPathArgument,
++  spawnCustomIntegration,
++} from '../custom-integration'
++
++const execFileAsync = promisify(execFile)
++
++export enum Agent {
++  ClaudeCode = 'Claude Code',
++  Codex = 'Codex',
++}
++
++const agentExecutables: Record<Agent, string> = {
++  [Agent.ClaudeCode]: 'claude',
++  [Agent.Codex]: 'codex',
++}
++
++export interface IFoundAgent {
++  readonly agent: Agent
++  readonly path: string
++}
++
++let agentCache: ReadonlyArray<IFoundAgent> | null = null
++
++async function findExecutable(name: string): Promise<string | null> {
++  try {
++    if (__WIN32__) {
++      const { stdout } = await execFileAsync('where.exe', [name])
++      const firstLine = stdout.trim().split(/\r?\n/)[0]
++      return firstLine || null
++    } else {
++      const { stdout } = await execFileAsync('which', [name])
++      return stdout.trim() || null
++    }
++  } catch {
++    return null
++  }
++}
++
++export async function getAvailableAgents(): Promise<
++  ReadonlyArray<IFoundAgent>
++> {
++  if (agentCache !== null) {
++    return agentCache
++  }
++
++  const found: IFoundAgent[] = []
++
++  for (const [agent, executable] of Object.entries(agentExecutables)) {
++    const path = await findExecutable(executable)
++    if (path) {
++      found.push({ agent: agent as Agent, path })
++    }
++  }
++
++  agentCache = found
++  return found
++}
++
++export async function findAgentOrDefault(
++  name: string | null
++): Promise<IFoundAgent | null> {
++  const agents = await getAvailableAgents()
++  if (agents.length === 0) {
++    return null
++  }
++
++  if (name) {
++    const match = agents.find(a => a.agent === name)
++    if (match) {
++      return match
++    }
++  }
++
++  return agents[0]
++}
++
++/**
++ * Launch a built-in agent in a new terminal window at the given repo path.
++ * Uses the same shell-spawn approach as the shell integration.
++ */
++export function launchAgent(
++  agent: IFoundAgent,
++  repoPath: string
++): ChildProcess {
++  const executable = agentExecutables[agent.agent]
++
++  if (__WIN32__) {
++    return spawn('START', [`"${agent.agent}"`, 'cmd', '/c', executable], {
++      shell: true,
++      cwd: repoPath,
++    })
++  } else if (__DARWIN__) {
++    // Open a Terminal.app running the agent
++    const script = `cd "${repoPath}" && ${executable}`
++    return spawn('osascript', [
++      '-e',
++      `tell application "Terminal" to do script "${script}"`,
++    ])
++  } else {
++    // Linux: try common terminal emulators
++    return spawn('x-terminal-emulator', ['-e', executable], {
++      cwd: repoPath,
++    })
++  }
++}
++
++/**
++ * Launch a custom agent in a new terminal window at the given repo path.
++ */
++export function launchCustomAgent(
++  customAgent: ICustomIntegration,
++  repoPath: string
++): ChildProcess {
++  const argv = parseCustomIntegrationArguments(customAgent.arguments)
++  const args = expandTargetPathArgument(argv, repoPath)
++  const cmd = customAgent.path
++
++  if (__WIN32__) {
++    // Launch in a new terminal: START "title" cmd /c "<path> <args>"
++    const fullCmd = [cmd, ...args].join(' ')
++    return spawn('START', ['"Agent"', 'cmd', '/c', fullCmd], {
++      shell: true,
++      cwd: repoPath,
++    })
++  } else {
++    return spawnCustomIntegration(`"${cmd}"`, args, {
++      shell: true,
++      cwd: repoPath,
++    })
++  }
++}
+diff --git a/app/src/lib/app-state.ts b/app/src/lib/app-state.ts
+index 70a339a..d5d0df1 100644
+--- a/app/src/lib/app-state.ts
++++ b/app/src/lib/app-state.ts
+@@ -347,6 +347,15 @@ export interface IAppState {
+   /** Info needed to launch a custom shell chosen by the user. */
+   readonly customShell: ICustomIntegration | null
+ 
++  /** The user's preferred agent. */
++  readonly selectedAgent: string | null
++
++  /** Whether or not the user wants to use a custom agent. */
++  readonly useCustomAgent: boolean
++
++  /** Info needed to launch a custom agent chosen by the user. */
++  readonly customAgent: ICustomIntegration | null
++
+   /**
+    * Whether or not the CI status popover is visible.
+    */
+diff --git a/app/src/lib/stores/app-store.ts b/app/src/lib/stores/app-store.ts
+index 69598de..bd504d5 100644
+--- a/app/src/lib/stores/app-store.ts
++++ b/app/src/lib/stores/app-store.ts
+@@ -134,6 +134,12 @@ import {
+   launchCustomExternalEditor,
+   launchExternalEditor,
+ } from '../editors'
++import {
++  findAgentOrDefault,
++  getAvailableAgents,
++  launchAgent,
++  launchCustomAgent,
++} from '../agents'
+ import { assertNever, fatalError, forceUnwrap } from '../fatal-error'
+ 
+ import { formatCommitMessage } from '../format-commit-message'
+@@ -447,6 +453,10 @@ const customEditorKey = 'custom-editor'
+ export const useCustomShellKey = 'use-custom-shell'
+ const customShellKey = 'custom-shell'
+ 
++const agentKey = 'agent'
++export const useCustomAgentKey = 'use-custom-agent'
++const customAgentKey = 'custom-agent'
++
+ export const underlineLinksKey = 'underline-links'
+ export const underlineLinksDefault = true
+ 
+@@ -597,6 +607,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
+   private useCustomShell: boolean = false
+   private customShell: ICustomIntegration | null = null
+ 
++  private selectedAgent: string | null = null
++  private useCustomAgent: boolean = false
++  private customAgent: ICustomIntegration | null = null
++
+   private showCIStatusPopover: boolean = false
+ 
+   /** A service for managing the stack of open popups */
+@@ -1101,6 +1115,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
+       customEditor: this.customEditor,
+       useCustomShell: this.useCustomShell,
+       customShell: this.customShell,
++      selectedAgent: this.selectedAgent,
++      useCustomAgent: this.useCustomAgent,
++      customAgent: this.customAgent,
+       showCIStatusPopover: this.showCIStatusPopover,
+       notificationsEnabled: getNotificationsEnabled(),
+       pullRequestSuggestedNextAction: this.pullRequestSuggestedNextAction,
+@@ -2265,6 +2282,13 @@ export class AppStore extends TypedBaseStore<IAppState> {
+     const shellValue = localStorage.getItem(shellKey)
+     this.selectedShell = shellValue ? parseShell(shellValue) : DefaultShell
+ 
++    this.lookupSelectedAgent()
++      .then(agent => {
++        this.selectedAgent = agent
++        this.emitUpdate()
++      })
++      .catch(e => log.error('Failed resolving current agent at startup', e))
++
+     this.updateMenuLabelsForSelectedRepository()
+ 
+     const imageDiffTypeValue = localStorage.getItem(imageDiffTypeKey)
+@@ -2326,6 +2350,16 @@ export class AppStore extends TypedBaseStore<IAppState> {
+       this._setCustomShell(migratedCustomShell)
+     }
+ 
++    this.selectedAgent = localStorage.getItem(agentKey)
++    this.useCustomAgent =
++      enableCustomIntegration() && getBoolean(useCustomAgentKey, false)
++    this.customAgent = getObject<ICustomIntegration>(customAgentKey) ?? null
++
++    const migratedCustomAgent = migratedCustomIntegration(this.customAgent)
++    if (migratedCustomAgent !== null) {
++      this._setCustomAgent(migratedCustomAgent)
++    }
++
+     this.pullRequestSuggestedNextAction =
+       getEnum(
+         pullRequestSuggestedNextActionKey,
+@@ -2500,6 +2534,23 @@ export class AppStore extends TypedBaseStore<IAppState> {
+     return null
+   }
+ 
++  private async lookupSelectedAgent(): Promise<string | null> {
++    const agents = (await getAvailableAgents()).map(found => found.agent)
++
++    const value = localStorage.getItem(agentKey)
++    if (value && (agents as readonly string[]).includes(value)) {
++      return value
++    }
++
++    if (agents.length) {
++      const value = agents[0]
++      localStorage.setItem(agentKey, value)
++      return value
++    }
++
++    return null
++  }
++
+   /**
+    * Update menu labels for the selected repository.
+    *
+@@ -7520,6 +7571,47 @@ export class AppStore extends TypedBaseStore<IAppState> {
+     this.emitUpdate()
+   }
+ 
++  public _setAgent(selectedAgent: string) {
++    localStorage.setItem(agentKey, selectedAgent)
++    this.selectedAgent = selectedAgent
++    this.emitUpdate()
++  }
++
++  public _setUseCustomAgent(useCustomAgent: boolean) {
++    setBoolean(useCustomAgentKey, useCustomAgent)
++    this.useCustomAgent = useCustomAgent
++    this.emitUpdate()
++  }
++
++  public _setCustomAgent(customAgent: ICustomIntegration) {
++    setObject(customAgentKey, customAgent)
++    this.customAgent = customAgent
++    this.emitUpdate()
++  }
++
++  public async _openAgent(path: string) {
++    const { useCustomAgent, customAgent } = this.getState()
++
++    try {
++      if (useCustomAgent && customAgent) {
++        launchCustomAgent(customAgent, path)
++      } else {
++        const match = await findAgentOrDefault(this.selectedAgent)
++        if (match === null) {
++          this.emitError(
++            new Error(
++              'No agents found. Install Claude Code or Codex and restart GitHub Desktop.'
++            )
++          )
++          return
++        }
++        launchAgent(match, path)
++      }
++    } catch (error) {
++      this.emitError(error)
++    }
++  }
++
+   /** This shouldn't be called directly. See `Dispatcher`. */
+   public async _reorderCommits(
+     repository: Repository,
+diff --git a/app/src/ui/app.tsx b/app/src/ui/app.tsx
+index 520f0d4..61423ae 100644
+--- a/app/src/ui/app.tsx
++++ b/app/src/ui/app.tsx
+@@ -1319,6 +1319,12 @@ export class App extends React.Component<IAppProps, IAppState> {
+       : this.state.selectedExternalEditor ?? undefined
+   }
+ 
++  private get agentLabel() {
++    return this.state.useCustomAgent
++      ? undefined
++      : this.state.selectedAgent ?? undefined
++  }
++
+   private openCurrentRepositoryInExternalEditor() {
+     const repository = this.getRepository()
+     if (!repository) {
+@@ -1595,6 +1601,9 @@ export class App extends React.Component<IAppProps, IAppState> {
+             customEditor={this.state.customEditor}
+             useCustomShell={this.state.useCustomShell}
+             customShell={this.state.customShell}
++            selectedAgent={this.state.selectedAgent}
++            useCustomAgent={this.state.useCustomAgent}
++            customAgent={this.state.customAgent}
+             repositoryIndicatorsEnabled={this.state.repositoryIndicatorsEnabled}
+             onEditGlobalGitConfig={this.editGlobalGitConfig}
+             underlineLinks={this.state.underlineLinks}
+@@ -2883,6 +2892,8 @@ export class App extends React.Component<IAppProps, IAppState> {
+         onRemoveRepository={this.removeRepository}
+         onViewOnGitHub={this.viewOnGitHub}
+         onOpenInShell={this.openInShell}
++        onOpenInAgent={this.openInAgent}
++        agentLabel={this.agentLabel}
+         onShowRepository={this.showRepository}
+         onOpenInExternalEditor={this.openInExternalEditor}
+         externalEditorLabel={this.externalEditorLabel}
+@@ -2928,6 +2939,14 @@ export class App extends React.Component<IAppProps, IAppState> {
+     this.props.dispatcher.openInExternalEditor(repository.path)
+   }
+ 
++  private openInAgent = (repository: Repository | CloningRepository) => {
++    if (!(repository instanceof Repository)) {
++      return
++    }
++
++    this.props.dispatcher.openAgent(repository.path)
++  }
++
+   private onOpenInExternalEditor = (path: string) => {
+     const repository = this.state.selectedState?.repository
+     if (repository === undefined) {
+@@ -3050,6 +3069,8 @@ export class App extends React.Component<IAppProps, IAppState> {
+       onRemoveRepository: this.removeRepository,
+       onShowRepository: this.showRepository,
+       onOpenInShell: this.openInShell,
++      onOpenInAgent: this.openInAgent,
++      agentLabel: this.agentLabel,
+       onOpenInExternalEditor: this.openInExternalEditor,
+       askForConfirmationOnRemoveRepository:
+         this.state.askForConfirmationOnRepositoryRemoval,
+diff --git a/app/src/ui/dispatcher/dispatcher.ts b/app/src/ui/dispatcher/dispatcher.ts
+index 2a4671c..5e1d0e2 100644
+--- a/app/src/ui/dispatcher/dispatcher.ts
++++ b/app/src/ui/dispatcher/dispatcher.ts
+@@ -1942,6 +1942,10 @@ export class Dispatcher {
+         this.openRepositoryFromUrl(action)
+         break
+ 
++      case 'add-local-repository':
++        this.openOrAddRepository(action.path)
++        break
++
+       default:
+         const unknownAction: IUnknownAction = action
+         log.warn(
+@@ -3264,6 +3268,26 @@ export class Dispatcher {
+     this.appStore._setCustomShell(customShell)
+   }
+ 
++  /** Set the user's preferred agent */
++  public setAgent(agent: string) {
++    this.appStore._setAgent(agent)
++  }
++
++  /** Set whether or not the user wants to use a custom agent */
++  public setUseCustomAgent(useCustomAgent: boolean) {
++    this.appStore._setUseCustomAgent(useCustomAgent)
++  }
++
++  /** Set the custom agent info */
++  public setCustomAgent(customAgent: ICustomIntegration) {
++    this.appStore._setCustomAgent(customAgent)
++  }
++
++  /** Open a repository path in the configured agent */
++  public async openAgent(path: string): Promise<void> {
++    return this.appStore._openAgent(path)
++  }
++
+   public async reorderCommits(
+     repository: Repository,
+     commitsToReorder: ReadonlyArray<Commit>,
+diff --git a/app/src/ui/lib/context-menu.ts b/app/src/ui/lib/context-menu.ts
+index 7f718df..4020d39 100644
+--- a/app/src/ui/lib/context-menu.ts
++++ b/app/src/ui/lib/context-menu.ts
+@@ -19,6 +19,8 @@ export const DefaultEditorLabel = __DARWIN__
+ 
+ export const DefaultShellLabel = __DARWIN__ ? 'Open in Shell' : 'Open in shell'
+ 
++export const DefaultAgentLabel = __DARWIN__ ? 'Open in Agent' : 'Open in agent'
++
+ export const RevealInFileManagerLabel = __DARWIN__
+   ? 'Reveal in Finder'
+   : __WIN32__
+diff --git a/app/src/ui/preferences/integrations.tsx b/app/src/ui/preferences/integrations.tsx
+index d04ab7b..112c77e 100644
+--- a/app/src/ui/preferences/integrations.tsx
++++ b/app/src/ui/preferences/integrations.tsx
+@@ -16,12 +16,19 @@ interface IIntegrationsPreferencesProps {
+   readonly selectedExternalEditor: string | null
+   readonly availableShells: ReadonlyArray<Shell>
+   readonly selectedShell: Shell
++  readonly availableAgents: ReadonlyArray<string>
++  readonly selectedAgent: string | null
+   readonly useCustomEditor: boolean
+   readonly customEditor: ICustomIntegration
+   readonly useCustomShell: boolean
+   readonly customShell: ICustomIntegration
++  readonly useCustomAgent: boolean
++  readonly customAgent: ICustomIntegration
+   readonly onSelectedEditorChanged: (editor: string) => void
+   readonly onSelectedShellChanged: (shell: Shell) => void
++  readonly onSelectedAgentChanged: (agent: string) => void
++  readonly onUseCustomAgentChanged: (useCustomAgent: boolean) => void
++  readonly onCustomAgentChanged: (customAgent: ICustomIntegration) => void
+   readonly onUseCustomEditorChanged: (useCustomEditor: boolean) => void
+   readonly onCustomEditorChanged: (customEditor: ICustomIntegration) => void
+   readonly onUseCustomShellChanged: (useCustomShell: boolean) => void
+@@ -31,10 +38,13 @@ interface IIntegrationsPreferencesProps {
+ interface IIntegrationsPreferencesState {
+   readonly selectedExternalEditor: string | null
+   readonly selectedShell: Shell
++  readonly selectedAgent: string | null
+   readonly useCustomEditor: boolean
+   readonly customEditor: ICustomIntegration
+   readonly useCustomShell: boolean
+   readonly customShell: ICustomIntegration
++  readonly useCustomAgent: boolean
++  readonly customAgent: ICustomIntegration
+ }
+ 
+ export class Integrations extends React.Component<
+@@ -43,6 +53,7 @@ export class Integrations extends React.Component<
+ > {
+   private customEditorFormRef = React.createRef<CustomIntegrationForm>()
+   private customShellFormRef = React.createRef<CustomIntegrationForm>()
++  private customAgentFormRef = React.createRef<CustomIntegrationForm>()
+ 
+   public constructor(props: IIntegrationsPreferencesProps) {
+     super(props)
+@@ -50,10 +61,13 @@ export class Integrations extends React.Component<
+     this.state = {
+       selectedExternalEditor: this.props.selectedExternalEditor,
+       selectedShell: this.props.selectedShell,
++      selectedAgent: this.props.selectedAgent,
+       useCustomEditor: this.props.useCustomEditor,
+       customEditor: this.props.customEditor,
+       useCustomShell: this.props.useCustomShell,
+       customShell: this.props.customShell,
++      useCustomAgent: this.props.useCustomAgent,
++      customAgent: this.props.customAgent,
+     }
+   }
+ 
+@@ -81,13 +95,27 @@ export class Integrations extends React.Component<
+         nextProps.onSelectedShellChanged(selectedShell)
+       }
+     }
++
++    const agents = nextProps.availableAgents
++    let selectedAgent = nextProps.selectedAgent
++    if (agents.length) {
++      const indexOf = selectedAgent ? agents.indexOf(selectedAgent) : -1
++      if (indexOf === -1) {
++        selectedAgent = agents[0]
++        nextProps.onSelectedAgentChanged(selectedAgent)
++      }
++    }
++
+     this.setState({
+       selectedExternalEditor,
+       selectedShell,
++      selectedAgent,
+       useCustomEditor: nextProps.useCustomEditor,
+       useCustomShell: nextProps.useCustomShell,
++      useCustomAgent: nextProps.useCustomAgent,
+       customShell: nextProps.customShell,
+       customEditor: nextProps.customEditor,
++      customAgent: nextProps.customAgent,
+     })
+   }
+ 
+@@ -96,15 +124,12 @@ export class Integrations extends React.Component<
+       const {
+         availableEditors,
+         availableShells,
++        availableAgents,
+         useCustomEditor,
+         useCustomShell,
++        useCustomAgent,
+       } = this.props
+ 
+-      // When there are no available editors or shells, the `Select` component
+-      // will have the custom editor or shell already selected, but we need
+-      // to handle that as initial value, otherwise the custom integration
+-      // form won't be rendered.
+-
+       if (availableEditors.length === 0 && !useCustomEditor) {
+         this.setSelectedEditor(CustomIntegrationValue)
+       }
+@@ -112,6 +137,10 @@ export class Integrations extends React.Component<
+       if (availableShells.length === 0 && !useCustomShell) {
+         this.setSelectedShell(CustomIntegrationValue)
+       }
++
++      if (availableAgents.length === 0 && !useCustomAgent) {
++        this.setSelectedAgent(CustomIntegrationValue)
++      }
+     }
+   }
+ 
+@@ -119,8 +148,6 @@ export class Integrations extends React.Component<
+     prevProps: IIntegrationsPreferencesProps,
+     prevState: IIntegrationsPreferencesState
+   ): void {
+-    // When the user switches to the custom editor or shell, we want to focus the
+-    // path input field.
+     if (!prevState.useCustomEditor && this.state.useCustomEditor) {
+       this.customEditorFormRef.current?.focus()
+     }
+@@ -128,6 +155,10 @@ export class Integrations extends React.Component<
+     if (!prevState.useCustomShell && this.state.useCustomShell) {
+       this.customShellFormRef.current?.focus()
+     }
++
++    if (!prevState.useCustomAgent && this.state.useCustomAgent) {
++      this.customAgentFormRef.current?.focus()
++    }
+   }
+ 
+   private onSelectedEditorChanged = (
+@@ -181,17 +212,126 @@ export class Integrations extends React.Component<
+     }
+   }
+ 
++  private onSelectedAgentChanged = (
++    event: React.FormEvent<HTMLSelectElement>
++  ) => {
++    const value = event.currentTarget.value
++    if (!value) {
++      return
++    }
++
++    this.setSelectedAgent(value)
++  }
++
++  private setSelectedAgent = (agent: string) => {
++    if (agent === CustomIntegrationValue) {
++      this.setState({ useCustomAgent: true })
++      this.props.onUseCustomAgentChanged(true)
++    } else {
++      this.setState({
++        useCustomAgent: false,
++        selectedAgent: agent,
++      })
++      this.props.onSelectedAgentChanged(agent)
++      this.props.onUseCustomAgentChanged(false)
++    }
++  }
++
++  private renderSelectedAgent() {
++    const options = this.props.availableAgents
++    const { selectedAgent, useCustomAgent } = this.state
++
++    return (
++      <Select
++        label={enableCustomIntegration() ? undefined : 'Agent'}
++        aria-label="Agent"
++        value={useCustomAgent ? CustomIntegrationValue : selectedAgent ?? undefined}
++        onChange={this.onSelectedAgentChanged}
++      >
++        {options.map(n => (
++          <option key={n} value={n}>
++            {n}
++          </option>
++        ))}
++        {enableCustomIntegration() && (
++          <option key={CustomIntegrationValue} value={CustomIntegrationValue}>
++            {__DARWIN__
++              ? 'Configure Custom Agent…'
++              : 'Configure custom agent…'}
++          </option>
++        )}
++      </Select>
++    )
++  }
++
++  private renderNoAgentHint() {
++    const options = this.props.availableAgents
++    if (options.length > 0) {
++      return null
++    }
++
++    return (
++      <Row>
++        <div className="no-options-found">
++          <span>
++            No agents found. Install{' '}
++            <LinkButton uri="https://docs.anthropic.com/en/docs/claude-code">
++              Claude Code
++            </LinkButton>{' '}
++            or{' '}
++            <LinkButton uri="https://openai.com/index/introducing-codex/">
++              Codex
++            </LinkButton>
++            .
++          </span>
++        </div>
++      </Row>
++    )
++  }
++
++  private renderCustomAgent() {
++    return (
++      <Row>
++        <CustomIntegrationForm
++          id="custom-agent"
++          ref={this.customAgentFormRef}
++          path={this.state.customAgent.path ?? ''}
++          arguments={this.state.customAgent.arguments}
++          onPathChanged={this.onCustomAgentPathChanged}
++          onArgumentsChanged={this.onCustomAgentArgumentsChanged}
++        />
++      </Row>
++    )
++  }
++
++  private onCustomAgentPathChanged = (path: string, bundleID?: string) => {
++    const customAgent: ICustomIntegration = {
++      path,
++      bundleID,
++      arguments: this.state.customAgent.arguments ?? [],
++    }
++
++    this.setState({ customAgent })
++    this.props.onCustomAgentChanged(customAgent)
++  }
++
++  private onCustomAgentArgumentsChanged = (args: string) => {
++    const customAgent: ICustomIntegration = {
++      path: this.state.customAgent.path ?? '',
++      bundleID: this.state.customAgent.bundleID,
++      arguments: args,
++    }
++
++    this.setState({ customAgent })
++    this.props.onCustomAgentChanged(customAgent)
++  }
++
+   private renderExternalEditor() {
+     const options = this.props.availableEditors
+     const { selectedExternalEditor, useCustomEditor } = this.state
+     const label = __DARWIN__ ? 'External Editor' : 'External editor'
+ 
+     if (!enableCustomIntegration() && options.length === 0) {
+-      // this is emulating the <Select/> component's UI so the styles are
+-      // consistent for either case.
+-      //
+-      // TODO: see whether it makes sense to have a fallback UI
+-      // which we display when the select list is empty
+       return (
+         <div className="select-component no-options-found">
+           <label>{label}</label>
+@@ -358,6 +498,7 @@ export class Integrations extends React.Component<
+           <h2>Applications</h2>
+           <Row>{this.renderExternalEditor()}</Row>
+           <Row>{this.renderSelectedShell()}</Row>
++          <Row>{this.renderSelectedAgent()}</Row>
+         </DialogContent>
+       )
+     }
+@@ -379,6 +520,14 @@ export class Integrations extends React.Component<
+           <Row>{this.renderSelectedShell()}</Row>
+           {this.state.useCustomShell && this.renderCustomShell()}
+         </fieldset>
++        <fieldset>
++          <legend>
++            <h2>Agent</h2>
++          </legend>
++          <Row>{this.renderSelectedAgent()}</Row>
++          {this.state.useCustomAgent && this.renderCustomAgent()}
++          {this.renderNoAgentHint()}
++        </fieldset>
+       </DialogContent>
+     )
+   }
+diff --git a/app/src/ui/preferences/preferences.tsx b/app/src/ui/preferences/preferences.tsx
+index 64e84a9..4e63df4 100644
+--- a/app/src/ui/preferences/preferences.tsx
++++ b/app/src/ui/preferences/preferences.tsx
+@@ -15,6 +15,7 @@ import {
+ import { lookupPreferredEmail } from '../../lib/email'
+ import { Shell, getAvailableShells } from '../../lib/shells'
+ import { getAvailableEditors } from '../../lib/editors/lookup'
++import { getAvailableAgents } from '../../lib/agents'
+ import {
+   gitAuthorNameIsValid,
+   InvalidGitAuthorNameMessage,
+@@ -76,6 +77,9 @@ interface IPreferencesProps {
+   readonly customEditor: ICustomIntegration | null
+   readonly useCustomShell: boolean
+   readonly customShell: ICustomIntegration | null
++  readonly selectedAgent: string | null
++  readonly useCustomAgent: boolean
++  readonly customAgent: ICustomIntegration | null
+   readonly repositoryIndicatorsEnabled: boolean
+   readonly onEditGlobalGitConfig: () => void
+   readonly underlineLinks: boolean
+@@ -113,6 +117,10 @@ interface IPreferencesState {
+   readonly selectedExternalEditor: string | null
+   readonly availableShells: ReadonlyArray<Shell>
+   readonly selectedShell: Shell
++  readonly availableAgents: ReadonlyArray<string>
++  readonly selectedAgent: string | null
++  readonly useCustomAgent: boolean
++  readonly customAgent: ICustomIntegration
+ 
+   /**
+    * If unable to save Git configuration values (name, email)
+@@ -183,6 +191,10 @@ export class Preferences extends React.Component<
+       selectedExternalEditor: this.props.selectedExternalEditor,
+       availableShells: [],
+       selectedShell: this.props.selectedShell,
++      availableAgents: [],
++      selectedAgent: this.props.selectedAgent,
++      useCustomAgent: this.props.useCustomAgent,
++      customAgent: this.props.customAgent ?? DefaultCustomIntegration,
+       repositoryIndicatorsEnabled: this.props.repositoryIndicatorsEnabled,
+       initiallySelectedTheme: this.props.selectedTheme,
+       initiallySelectedTabSize: this.props.selectedTabSize,
+@@ -218,13 +230,15 @@ export class Preferences extends React.Component<
+     committerName = committerName || ''
+     committerEmail = committerEmail || ''
+ 
+-    const [editors, shells] = await Promise.all([
++    const [editors, shells, agents] = await Promise.all([
+       getAvailableEditors(),
+       getAvailableShells(),
++      getAvailableAgents(),
+     ])
+ 
+     const availableEditors = editors.map(e => e.editor) ?? null
+     const availableShells = shells.map(e => e.shell) ?? null
++    const availableAgents = agents.map(a => a.agent) ?? null
+ 
+     this.setState({
+       committerName,
+@@ -251,10 +265,13 @@ export class Preferences extends React.Component<
+       uncommittedChangesStrategy: this.props.uncommittedChangesStrategy,
+       availableShells,
+       availableEditors,
++      availableAgents,
+       useCustomEditor: this.props.useCustomEditor,
+       customEditor: this.props.customEditor ?? DefaultCustomIntegration,
+       useCustomShell: this.props.useCustomShell,
+       customShell: this.props.customShell ?? DefaultCustomIntegration,
++      useCustomAgent: this.props.useCustomAgent,
++      customAgent: this.props.customAgent ?? DefaultCustomIntegration,
+       isLoadingGitConfig: false,
+     })
+   }
+@@ -405,6 +422,13 @@ export class Preferences extends React.Component<
+             onSelectedEditorChanged={this.onSelectedEditorChanged}
+             availableShells={this.state.availableShells}
+             selectedShell={this.state.selectedShell}
++            availableAgents={this.state.availableAgents}
++            selectedAgent={this.state.selectedAgent}
++            useCustomAgent={this.state.useCustomAgent}
++            customAgent={this.state.customAgent}
++            onSelectedAgentChanged={this.onSelectedAgentChanged}
++            onUseCustomAgentChanged={this.onUseCustomAgentChanged}
++            onCustomAgentChanged={this.onCustomAgentChanged}
+             useCustomEditor={this.state.useCustomEditor}
+             customEditor={this.state.customEditor}
+             useCustomShell={this.state.useCustomShell}
+@@ -667,6 +691,18 @@ export class Preferences extends React.Component<
+     this.setState({ customShell })
+   }
+ 
++  private onSelectedAgentChanged = (agent: string) => {
++    this.setState({ selectedAgent: agent })
++  }
++
++  private onUseCustomAgentChanged = (useCustomAgent: boolean) => {
++    this.setState({ useCustomAgent })
++  }
++
++  private onCustomAgentChanged = (customAgent: ICustomIntegration) => {
++    this.setState({ customAgent })
++  }
++
+   private onSelectedThemeChanged = (theme: ApplicationTheme) => {
+     this.props.dispatcher.setSelectedTheme(theme)
+   }
+@@ -779,6 +815,15 @@ export class Preferences extends React.Component<
+       dispatcher.setCustomShell(customShell)
+     }
+ 
++    const { useCustomAgent, customAgent } = this.state
++
++    const isValidCustomAgent =
++      customAgent && (await isValidCustomIntegration(customAgent))
++    dispatcher.setUseCustomAgent(useCustomAgent && isValidCustomAgent)
++    if (isValidCustomAgent) {
++      dispatcher.setCustomAgent(customAgent)
++    }
++
+     if (
+       this.props.useExternalCredentialHelper !==
+       this.state.useExternalCredentialHelper
+@@ -811,6 +856,9 @@ export class Preferences extends React.Component<
+       await dispatcher.setExternalEditor(this.state.selectedExternalEditor)
+     }
+     await dispatcher.setShell(this.state.selectedShell)
++    if (this.state.selectedAgent) {
++      dispatcher.setAgent(this.state.selectedAgent)
++    }
+     await dispatcher.setConfirmDiscardChangesSetting(
+       this.state.confirmDiscardChanges
+     )
+diff --git a/app/src/ui/repositories-list/repositories-list.tsx b/app/src/ui/repositories-list/repositories-list.tsx
+index d5e6a10..09d6c20 100644
+--- a/app/src/ui/repositories-list/repositories-list.tsx
++++ b/app/src/ui/repositories-list/repositories-list.tsx
+@@ -58,6 +58,12 @@ interface IRepositoriesListProps {
+   /** Called when the repository should be shown in the shell. */
+   readonly onOpenInShell: (repository: Repositoryish) => void
+ 
++  /** Called when the repository should be opened in an agent */
++  readonly onOpenInAgent: (repository: Repositoryish) => void
++
++  /** The label for the user's preferred agent. */
++  readonly agentLabel?: string
++
+   /** Called when the repository should be opened in an external editor */
+   readonly onOpenInExternalEditor: (repository: Repositoryish) => void
+ 
+@@ -217,6 +223,8 @@ export class RepositoriesList extends React.Component<
+       onRemoveRepository: this.props.onRemoveRepository,
+       onShowRepository: this.props.onShowRepository,
+       onOpenInShell: this.props.onOpenInShell,
++      onOpenInAgent: this.props.onOpenInAgent,
++      agentLabel: this.props.agentLabel,
+       onOpenInExternalEditor: this.props.onOpenInExternalEditor,
+       askForConfirmationOnRemoveRepository:
+         this.props.askForConfirmationOnRemoveRepository,
+diff --git a/app/src/ui/repositories-list/repository-list-item-context-menu.ts b/app/src/ui/repositories-list/repository-list-item-context-menu.ts
+index 6ee52c5..cec2d46 100644
+--- a/app/src/ui/repositories-list/repository-list-item-context-menu.ts
++++ b/app/src/ui/repositories-list/repository-list-item-context-menu.ts
+@@ -6,15 +6,18 @@ import {
+   RevealInFileManagerLabel,
+   DefaultEditorLabel,
+   DefaultShellLabel,
++  DefaultAgentLabel,
+ } from '../lib/context-menu'
+ 
+ interface IRepositoryListItemContextMenuConfig {
+   repository: Repositoryish
+   shellLabel: string | undefined
++  agentLabel: string | undefined
+   externalEditorLabel: string | undefined
+   askForConfirmationOnRemoveRepository: boolean
+   onViewOnGitHub: (repository: Repositoryish) => void
+   onOpenInShell: (repository: Repositoryish) => void
++  onOpenInAgent: (repository: Repositoryish) => void
+   onShowRepository: (repository: Repositoryish) => void
+   onOpenInExternalEditor: (repository: Repositoryish) => void
+   onRemoveRepository: (repository: Repositoryish) => void
+@@ -35,6 +38,9 @@ export const generateRepositoryListContextMenu = (
+   const openInShell = config.shellLabel
+     ? `Open in ${config.shellLabel}`
+     : DefaultShellLabel
++  const openInAgent = config.agentLabel
++    ? `Open in ${config.agentLabel}`
++    : DefaultAgentLabel
+ 
+   const items: ReadonlyArray<IMenuItem> = [
+     ...buildAliasMenuItems(config),
+@@ -57,6 +63,11 @@ export const generateRepositoryListContextMenu = (
+       action: () => config.onOpenInShell(repository),
+       enabled: !missing,
+     },
++    {
++      label: openInAgent,
++      action: () => config.onOpenInAgent(repository),
++      enabled: !missing,
++    },
+     {
+       label: RevealInFileManagerLabel,
+       action: () => config.onShowRepository(repository),
